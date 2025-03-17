@@ -1,0 +1,14 @@
+{
+  "cSpell.words": [
+    "awslambda",
+    "markvp",
+    "modelcontextprotocol",
+    "streamified",
+    "streamify"
+  ],
+  "eslint.format.enable": true,
+  "eslint.lintTask.enable": true,
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": true,
+  "editor.formatOnType": true
+}
