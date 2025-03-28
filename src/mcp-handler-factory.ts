@@ -57,7 +57,7 @@ export class MCPHandlerFactory {
     this.transport = new LambdaSSETransport();
     this.server = new McpServer({
       name: 'MCP Lambda Server',
-      version: '1.0.0',
+      version: '1.0.2',
     });
 
     if (config.tools) {
@@ -85,8 +85,6 @@ export class MCPHandlerFactory {
         }
       }
     }
-
-    void this.server.connect(this.transport);
   }
 
   public getHandler(): RequestHandler {
@@ -95,8 +93,8 @@ export class MCPHandlerFactory {
         try {
           // Set up the response stream and start the transport
           this.transport.initiateResponse(responseStream);
-          await this.transport.start();
 
+          await this.server.connect(this.transport);
           // Create a readable stream from the event
           const eventStream = Readable.from(Buffer.from(JSON.stringify(event)));
 

@@ -132,7 +132,6 @@ describe('MCPHandlerFactory', () => {
 
       // Verify transport was initialized and used correctly
       expect(mockTransport.initiateResponse).toHaveBeenCalledWith(mockResponseStream);
-      expect(mockTransport.start).toHaveBeenCalled();
       expect(mockTransport.handleMessage).toHaveBeenCalled();
       expect(mockTransport.close).toHaveBeenCalled();
     });

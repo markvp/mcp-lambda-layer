@@ -1,6 +1,6 @@
 {
   "name": "@markvp/mcp-lambda-layer",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "AWS Lambda for Model Context Protocol (MCP) Server",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
