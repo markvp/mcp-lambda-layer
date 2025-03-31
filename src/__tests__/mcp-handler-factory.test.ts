@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/unbound-method */
-import { Readable } from 'stream';
+import { Readable } from 'node:stream';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';

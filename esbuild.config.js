@@ -5,7 +5,7 @@ const config = {
   entryPoints: ['src/index.ts'],
   bundle: true,
   platform: 'node',
-  target: 'node18',
+  target: 'node20',
   format: isESM ? 'esm' : 'cjs',
   outdir: isESM ? 'dist/esm' : 'dist/cjs',
   sourcemap: true,
@@ -16,8 +16,25 @@ const config = {
   external: [
     '@modelcontextprotocol/sdk',
     'zod',
-    '@aws-sdk/*'
-  ]
+    '@aws-sdk/*',
+    'node:*',
+    'stream',
+    'stream/promises',
+    'stream/web',
+    'stream/consumers',
+    'stream/readable',
+    'stream/writable',
+    'stream/duplex',
+    'stream/transform',
+    'stream/pass-through',
+  ],
+  resolveExtensions: ['.ts', '.js'],
+  alias: {
+    'node:stream': 'stream',
+    'node:stream/promises': 'stream/promises',
+  },
 };
 
-require('esbuild').build(config).catch(() => process.exit(1));
+require('esbuild')
+  .build(config)
+  .catch(() => process.exit(1));

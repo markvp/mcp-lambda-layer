@@ -57,7 +57,7 @@ export class MCPHandlerFactory {
     this.transport = new LambdaSSETransport();
     this.server = new McpServer({
       name: 'MCP Lambda Server',
-      version: '1.0.2',
+      version: '1.0.7',
     });
 
     if (config.tools) {

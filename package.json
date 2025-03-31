@@ -1,6 +1,6 @@
 {
   "name": "@markvp/mcp-lambda-layer",
-  "version": "1.0.2",
+  "version": "1.0.7",
   "description": "AWS Lambda for Model Context Protocol (MCP) Server",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
@@ -20,8 +20,8 @@
   "scripts": {
     "build": "npm run build:bundle && npm run build:types",
     "build:bundle": "npm run build:cjs && npm run build:esm",
-    "build:cjs": "node build.config.js",
-    "build:esm": "NODE_ENV=esm node build.config.js",
+    "build:cjs": "node esbuild.config.js",
+    "build:esm": "NODE_ENV=esm node esbuild.config.js",
     "build:types": "tsc --emitDeclarationOnly --declaration --declarationDir dist/types",
     "clean": "rm -rf dist",
     "_prepare": "npm run clean && npm run build",

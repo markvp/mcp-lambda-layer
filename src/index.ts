@@ -10,5 +10,5 @@ export type {
   PromptCallback,
 } from '@modelcontextprotocol/sdk/server/mcp';
 
-// Re-export ResponseStream type from lambda-stream
-export type { ResponseStream } from 'lambda-stream';
+// Re-export ResponseStream from lambda-stream
+export { ResponseStream } from 'lambda-stream';
