@@ -1,157 +1,187 @@
-/* eslint-disable @typescript-eslint/unbound-method */
-import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types';
+import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { ResponseStream } from 'lambda-stream';
 
-import { LambdaSSETransport } from '../lambda-sse-transport';
-
-jest.mock('lambda-stream', () => ({
-  ResponseStream: jest.fn().mockImplementation(() => ({
-    write: jest.fn(),
-    end: jest.fn(),
-  })),
-}));
+import { LambdaSSETransport } from '../lambdas/sse/lambda-sse-transport';
 
 describe('LambdaSSETransport', () => {
   let transport: LambdaSSETransport;
   let mockResponseStream: jest.Mocked<ResponseStream>;
 
-  beforeEach(() => {
-    jest.useFakeTimers();
-    transport = new LambdaSSETransport();
-    mockResponseStream = new ResponseStream() as jest.Mocked<ResponseStream>;
+  beforeEach((): void => {
+    mockResponseStream = {
+      write: jest.fn(),
+      end: jest.fn(),
+      on: jest.fn(),
+      //   .mockImplementation(function (this: void, event: string, callback: () => void) {
+      //   if (event === 'close') {
+      //     callback();
+      //   }
+      //   return mockResponseStream;
+      // }),
+      destroyed: false,
+    } as unknown as jest.Mocked<ResponseStream>;
+
+    transport = new LambdaSSETransport('https://test-endpoint', mockResponseStream);
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    jest.clearAllMocks();
   });
 
   describe('constructor', () => {
-    it('should generate a unique session ID', () => {
-      expect(transport.sessionId).toMatch(/^lambda-\d+-[a-z0-9]+$/);
-    });
-  });
+    const testInit = (): void => {
+      expect(transport.sessionId).toBeTruthy();
+      expect(transport).toBeInstanceOf(LambdaSSETransport);
+      expect(transport).toMatchObject({
+        sessionId: expect.any(String) as string,
+      });
+    };
 
-  describe('initiateResponse', () => {
-    it('should set the response stream', () => {
-      transport.initiateResponse(mockResponseStream);
-      expect(transport['responseStream']).toBe(mockResponseStream);
-    });
+    it('should initialize with endpoint and response stream', testInit);
 
-    it('should throw if response stream is already set', () => {
-      transport.initiateResponse(mockResponseStream);
-      expect(() => transport.initiateResponse(mockResponseStream)).toThrow(
-        'Response stream already available',
-      );
-    });
+    const testInterface = (): void => {
+      const transportInstance: Transport = transport;
+      expect(transportInstance).toHaveProperty('start');
+      expect(transportInstance).toHaveProperty('send');
+      expect(transportInstance).toHaveProperty('close');
+    };
+
+    it('should implement Transport interface', testInterface);
   });
 
   describe('start', () => {
-    it('should write SSE headers', async () => {
-      transport.initiateResponse(mockResponseStream);
+    it('should write SSE headers and endpoint info', async (): Promise<void> => {
+      const expectedHeaders = new TextEncoder().encode(
+        'Content-Type: text/event-stream\n' +
+          'Cache-Control: no-cache\n' +
+          'Connection: keep-alive\n' +
+          'Access-Control-Allow-Origin: *\n\n',
+      );
+
+      const expectedEndpoint = new TextEncoder().encode(
+        'event: endpoint\n' + `data: https://test-endpoint?sessionId=${transport.sessionId}\n\n`,
+      );
+
       await transport.start();
 
-      expect(mockResponseStream.write).toHaveBeenCalledWith(expect.any(Uint8Array));
-      const headers = new TextDecoder().decode(
-        mockResponseStream.write.mock.calls[0][0] as Uint8Array,
-      );
-      expect(headers).toContain('Content-Type: text/event-stream');
-      expect(headers).toContain('Cache-Control: no-cache');
-      expect(headers).toContain('Connection: keep-alive');
-      expect(headers).toContain('Access-Control-Allow-Origin: *');
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockResponseStream.write).toHaveBeenCalledTimes(2);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockResponseStream.write).toHaveBeenNthCalledWith(1, expectedHeaders);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockResponseStream.write).toHaveBeenNthCalledWith(2, expectedEndpoint);
     });
 
-    it('should throw if response stream is not set', async () => {
+    const testCleanup = async (): Promise<void> => {
+      await transport.start();
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockResponseStream.on).toHaveBeenCalledWith('close', expect.any(Function));
+    };
+
+    it('should register cleanup on stream close', testCleanup);
+
+    it('should throw error if response stream is not available', async (): Promise<void> => {
+      transport['responseStream'] = undefined;
       await expect(transport.start()).rejects.toThrow('No response stream available');
     });
   });
 
   describe('send', () => {
-    it('should format and write message as SSE', async () => {
-      transport.initiateResponse(mockResponseStream);
+    it('should write message as SSE event', async (): Promise<void> => {
       const message: JSONRPCMessage = {
         jsonrpc: '2.0',
         method: 'test',
-        params: {},
+        params: { foo: 'bar' },
         id: 1,
       };
+      const expectedMessage = new TextEncoder().encode(
+        'event: message\n' + `data: ${JSON.stringify(message)}\n\n`,
+      );
 
       await transport.send(message);
 
-      expect(mockResponseStream.write).toHaveBeenCalledWith(expect.any(Uint8Array));
-      const sseMessage = new TextDecoder().decode(
-        mockResponseStream.write.mock.calls[0][0] as Uint8Array,
-      );
-      expect(sseMessage).toBe(`event: message\ndata: ${JSON.stringify(message)}\n\n`);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockResponseStream.write).toHaveBeenCalledTimes(1);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockResponseStream.write).toHaveBeenNthCalledWith(1, expectedMessage);
     });
 
-    it('should throw if not connected', async () => {
-      const message: JSONRPCMessage = {
-        jsonrpc: '2.0',
-        method: 'test',
-        params: {},
-        id: 1,
-      };
-
-      await expect(transport.send(message)).rejects.toThrow('Not connected');
+    it('should throw error if not connected', async (): Promise<void> => {
+      transport['responseStream'] = undefined;
+      await expect(transport.send({} as JSONRPCMessage)).rejects.toThrow('Not connected');
     });
   });
 
   describe('close', () => {
-    it('should end the response stream and call onclose handler', async () => {
+    it('should end response stream and call onclose handler', async (): Promise<void> => {
       const onclose = jest.fn();
       transport.onclose = onclose;
-      transport.initiateResponse(mockResponseStream);
 
       await transport.close();
 
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockResponseStream.end).toHaveBeenCalled();
-      expect(transport['responseStream']).toBeUndefined();
       expect(onclose).toHaveBeenCalled();
+      expect(transport['responseStream']).toBeUndefined();
     });
 
-    it('should not throw if response stream is not set', async () => {
-      await expect(transport.close()).resolves.toBeUndefined();
+    it('should handle close even if response stream is already undefined', async (): Promise<void> => {
+      transport['responseStream'] = undefined;
+      await expect(transport.close()).resolves.not.toThrow();
+    });
+
+    it('should call onclose even if end throws', async (): Promise<void> => {
+      const onclose = jest.fn();
+      transport.onclose = onclose;
+      mockResponseStream.end.mockImplementation(() => {
+        throw new Error('End failed');
+      });
+
+      await transport.close();
+
+      expect(onclose).toHaveBeenCalled();
+      expect(transport['responseStream']).toBeUndefined();
     });
   });
 
   describe('handleMessage', () => {
-    it('should process valid message and send success response', () => {
-      transport.initiateResponse(mockResponseStream);
-      const message: JSONRPCMessage = {
-        jsonrpc: '2.0',
-        method: 'test',
-        params: {},
-        id: 1,
-      };
-
+    it('should validate and forward JSON-RPC messages', () => {
       const onmessage = jest.fn();
       transport.onmessage = onmessage;
 
-      expect(transport.handleMessage(message)).toContain('HTTP/1.1 202 Accepted');
+      const message: JSONRPCMessage = {
+        jsonrpc: '2.0',
+        method: 'test',
+        params: { foo: 'bar' },
+        id: 1,
+      };
+
+      const result = transport.handleMessage(JSON.stringify(message));
 
       expect(onmessage).toHaveBeenCalledWith(message);
+      expect(result).toBeInstanceOf(Uint8Array);
+
+      const response = new TextDecoder().decode(result);
+      expect(response).toContain('event: message');
+      const parsedResponse = JSON.parse(response.split('data: ')[1]) as JSONRPCMessage;
+      expect(parsedResponse).toEqual(message);
     });
 
-    it('should handle invalid message and send error response', () => {
-      transport.initiateResponse(mockResponseStream);
+    it('should throw error for invalid JSON-RPC messages', () => {
       const onerror = jest.fn();
       transport.onerror = onerror;
 
       const invalidMessage = { invalid: 'message' };
 
-      expect(transport.handleMessage(invalidMessage)).toContain('HTTP/1.1 400 Bad Request');
+      expect(() => transport.handleMessage(JSON.stringify(invalidMessage))).toThrow();
       expect(onerror).toHaveBeenCalled();
     });
 
-    it('should throw if not connected', () => {
-      const message: JSONRPCMessage = {
-        jsonrpc: '2.0',
-        method: 'test',
-        params: {},
-        id: 1,
-      };
-
-      expect(() => transport.handleMessage(message)).toThrow('Not connected');
+    it('should throw error if not connected', () => {
+      transport['responseStream'] = undefined;
+      expect(() => transport.handleMessage('{"valid":"json"}')).toThrow('Not connected');
     });
   });
 });

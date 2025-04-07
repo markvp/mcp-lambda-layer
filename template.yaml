@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: MCP Lambda Layer
+
+Parameters:
+  VpcEnabled:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+    Description: Enable VPC support for Lambda functions
+  VpcId:
+    Type: String
+    Description: VPC ID for Lambda functions
+    Default: ""
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: List of subnet IDs for Lambda functions
+    Default: ""
+  StackIdentifier:
+    Type: String
+    Description: Unique identifier for this MCP server instance
+    Default: default
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: mcp-lambda-layer
+    Description: Model Context Protocol implementation using AWS Lambda
+    Author: Mark van Proctor
+    SpdxLicenseId: MIT
+    LicenseUrl: LICENSE
+    ReadmeUrl: README.md
+    Labels:
+      - mcp
+      - lambda
+      - serverless
+    HomePageUrl: https://github.com/markvp/mcp-lambda-sam
+
+Conditions:
+  UseVpc:
+    Fn::Equals:
+      - !Ref VpcEnabled
+      - "true"
+
+Resources:
+  RegistrationTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: !Sub ${StackIdentifier}-mcp-registrations
+      PrimaryKey:
+        Name: id
+        Type: String
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseVpc
+    Properties:
+      GroupDescription: Security group for MCP Lambda functions
+      VpcId: !Ref VpcId
+
+  LambdaSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: UseVpc
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  SseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${StackIdentifier}-mcp-sse
+      CodeUri: dist/lambdas/sse
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 300
+      Policies:
+        - Fn::If:
+            - UseVpc
+            - VPCAccessPolicy: {}
+            - !Ref AWS::NoValue
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistrationTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - sqs:CreateQueue
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+                - sqs:DeleteQueue
+              Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:mcp-session-*.fifo
+
+      Environment:
+        Variables:
+          REGISTRATION_TABLE_NAME: !Ref RegistrationTable
+          MESSAGE_FUNCTION_URL: !GetAtt MessageFunctionUrl.FunctionUrl
+      VpcConfig: !If
+        - UseVpc
+        - SubnetIds: !Ref SubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroup
+        - !Ref AWS::NoValue
+
+  SseFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt SseFunction.Arn
+      AuthType: AWS_IAM
+      InvokeMode: RESPONSE_STREAM
+      Cors:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+        AllowHeaders:
+          - Content-Type
+
+  MessageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${StackIdentifier}-mcp-message
+      CodeUri: dist/lambdas/message
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Policies:
+        - Fn::If:
+            - UseVpc
+            - VPCAccessPolicy: {}
+            - !Ref AWS::NoValue
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:GetQueueAttributes
+              Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:mcp-session-*.fifo
+      VpcConfig: !If
+        - UseVpc
+        - SubnetIds: !Ref SubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroup
+        - !Ref AWS::NoValue
+
+  MessageFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt MessageFunction.Arn
+      AuthType: AWS_IAM
+      Cors:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - POST
+        AllowHeaders:
+          - Content-Type
+
+  RegistrationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${StackIdentifier}-mcp-registration
+      CodeUri: dist/lambdas/registration
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Policies:
+        - Fn::If:
+            - UseVpc
+            - VPCAccessPolicy: {}
+            - !Ref AWS::NoValue
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RegistrationTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - lambda:AddPermission
+                - lambda:RemovePermission
+              Resource: "*"
+      Environment:
+        Variables:
+          REGISTRATION_TABLE_NAME: !Ref RegistrationTable
+          SSE_FUNCTION_NAME: !Ref SseFunction
+      VpcConfig: !If
+        - UseVpc
+        - SubnetIds: !Ref SubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroup
+        - !Ref AWS::NoValue
+
+  RegistrationFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt RegistrationFunction.Arn
+      AuthType: AWS_IAM
+      Cors:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        AllowHeaders:
+          - Content-Type
+
+Outputs:
+  SseFunctionUrl:
+    Description: SSE Function URL
+    Value: !GetAtt SseFunctionUrl.FunctionUrl
+  RegistrationFunctionUrl:
+    Description: Registration Function URL
+    Value: !GetAtt RegistrationFunctionUrl.FunctionUrl
