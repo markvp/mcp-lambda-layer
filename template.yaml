@@ -25,8 +25,8 @@ Parameters:
 
 Metadata:
   AWS::ServerlessRepo::Application:
-    Name: mcp-lambda-layer
-    Description: Model Context Protocol implementation using AWS Lambda
+    Name: mcp-lambda-sam
+    Description: Model Context Protocol implementation using AWS Serverless Application Model (SAM)
     Author: Mark van Proctor
     SpdxLicenseId: MIT
     LicenseUrl: LICENSE
@@ -35,6 +35,12 @@ Metadata:
       - mcp
       - lambda
       - serverless
+      - model context protocol
+      - aws
+      - sam
+      - agentic AI
+      - cursor
+      - claude
     HomePageUrl: https://github.com/markvp/mcp-lambda-sam
 
 Conditions:
