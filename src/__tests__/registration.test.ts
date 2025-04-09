@@ -16,7 +16,7 @@ import { mockClient } from 'aws-sdk-client-mock';
 // Set required environment variables before importing handler
 process.env.AWS_REGION = 'us-east-1';
 process.env.REGISTRATION_TABLE_NAME = 'test-table';
-process.env.SSE_FUNCTION_NAME = 'test-sse-function';
+process.env.MCP_FUNCTION_NAME = 'test-sse-function';
 
 import { handler } from '../lambdas/registration';
 import { Registration, RegistrationRequest } from '../types/registration';
@@ -32,7 +32,7 @@ describe('Registration Lambda', () => {
     process.env = { ...OLD_ENV };
     process.env.AWS_REGION = 'us-east-1';
     process.env.REGISTRATION_TABLE_NAME = 'test-table';
-    process.env.SSE_FUNCTION_NAME = 'test-sse-function';
+    process.env.MCP_FUNCTION_NAME = 'test-sse-function';
     dynamoMock.reset();
     lambdaMock.reset();
   });

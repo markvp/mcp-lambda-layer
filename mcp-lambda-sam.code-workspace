@@ -26,9 +26,6 @@
             "!Transform mapping",
             "!Ref scalar"
         ],
-        "yaml.format.enable": true,
-        "cSpell.words": [
-            "unmarshall"
-        ]
+        "yaml.format.enable": true
     }
 }

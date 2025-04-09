@@ -31,8 +31,8 @@ describe('deploy', () => {
           StackStatus: 'CREATE_COMPLETE',
           Outputs: [
             {
-              OutputKey: 'SseFunctionUrl',
-              OutputValue: 'https://sse.example.com/',
+              OutputKey: 'McpFunctionUrl',
+              OutputValue: 'https://mcp.example.com/',
             },
             {
               OutputKey: 'RegistrationFunctionUrl',
@@ -59,7 +59,7 @@ describe('deploy', () => {
       expect.any(Object),
     );
 
-    expect(result.sseUrl).toBe('https://sse.example.com/sse');
+    expect(result.sseUrl).toBe('https://mcp.example.com/sse');
     expect(result.registrationUrl).toBe('https://registration.example.com/');
   });
 
@@ -83,8 +83,8 @@ describe('deploy', () => {
           StackStatus: 'CREATE_COMPLETE',
           Outputs: [
             {
-              OutputKey: 'SseFunctionUrl',
-              OutputValue: 'https://sse.example.com/',
+              OutputKey: 'McpFunctionUrl',
+              OutputValue: 'https://mcp.example.com/',
             },
             {
               OutputKey: 'RegistrationFunctionUrl',
@@ -152,8 +152,8 @@ describe('deploy', () => {
           StackStatus: 'CREATE_COMPLETE',
           Outputs: [
             {
-              OutputKey: 'SseFunctionUrl',
-              OutputValue: 'https://sse.example.com',
+              OutputKey: 'McpFunctionUrl',
+              OutputValue: 'https://mcp.example.com',
             },
           ],
         },
@@ -188,8 +188,8 @@ describe('deploy', () => {
           StackStatus: 'CREATE_COMPLETE',
           Outputs: [
             {
-              OutputKey: 'SseFunctionUrl',
-              OutputValue: 'https://sse.example.com/',
+              OutputKey: 'McpFunctionUrl',
+              OutputValue: 'https://mcp.example.com/',
             },
             {
               OutputKey: 'RegistrationFunctionUrl',
@@ -208,7 +208,7 @@ describe('deploy', () => {
       expect.any(Object),
     );
 
-    expect(result.sseUrl).toBe('https://sse.example.com/sse');
+    expect(result.sseUrl).toBe('https://mcp.example.com/sse');
     expect(result.registrationUrl).toBe('https://registration.example.com/');
   });
 });

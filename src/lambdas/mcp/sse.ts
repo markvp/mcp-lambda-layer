@@ -10,7 +10,7 @@ import {
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ListResourcesResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { ResponseStream, streamifyResponse } from 'lambda-stream';
+import { ResponseStream } from 'lambda-stream';
 import { z } from 'zod';
 
 import { ResponseBodySchema, decodeLambdaResponse } from '../../types/lambda';
@@ -18,48 +18,41 @@ import { ResourceParameters, fromDynamoFormat } from '../../types/registration';
 
 import { LambdaSSETransport } from './lambda-sse-transport';
 
-const { AWS_REGION, REGISTRATION_TABLE_NAME } = process.env;
+export function getSseHandler() {
+  const { AWS_REGION, REGISTRATION_TABLE_NAME, MCP_EXECUTION_ROLE_ARN } = process.env;
 
-if (!AWS_REGION || !REGISTRATION_TABLE_NAME) {
-  throw new Error('Required environment variables are not set');
-}
-
-const sqsClient = new SQSClient({ region: AWS_REGION });
-const dynamodbClient = new DynamoDBClient({ region: AWS_REGION });
-const lambdaClient = new LambdaClient({ region: AWS_REGION });
-
-async function invokeLambda<T>(
-  lambdaArn: string,
-  payload: unknown,
-  schema: z.ZodType<T>,
-): Promise<T> {
-  const { Payload } = await lambdaClient.send(
-    new InvokeCommand({
-      FunctionName: lambdaArn,
-      Payload: Buffer.from(JSON.stringify(payload)),
-    }),
-  );
-
-  if (!Payload) {
-    throw new Error('No response from Lambda');
+  if (!AWS_REGION || !REGISTRATION_TABLE_NAME || !MCP_EXECUTION_ROLE_ARN) {
+    throw new Error('Required environment variables are not set');
   }
 
-  return decodeLambdaResponse(Payload, schema);
-}
+  const sqsClient = new SQSClient({ region: AWS_REGION });
+  const dynamodbClient = new DynamoDBClient({ region: AWS_REGION });
+  const lambdaClient = new LambdaClient({ region: AWS_REGION });
 
-export const handler = streamifyResponse(
-  async (event: APIGatewayProxyEventV2, responseStream: ResponseStream): Promise<void> => {
-    const {
-      requestContext: {
-        http: { method, path },
-      },
-    } = event;
+  async function invokeLambda<T>(
+    lambdaArn: string,
+    payload: unknown,
+    schema: z.ZodType<T>,
+  ): Promise<T> {
+    const { Payload } = await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: lambdaArn,
+        Payload: Buffer.from(JSON.stringify(payload)),
+      }),
+    );
 
-    if (method !== 'GET' || !path.endsWith('/sse')) {
-      throw new Error('Invalid request method or path');
+    if (!Payload) {
+      throw new Error('No response from Lambda');
     }
 
-    const messageEndpoint = `${process.env.MESSAGE_FUNCTION_URL}/message`;
+    return decodeLambdaResponse(Payload, schema);
+  }
+
+  return async function handleSse(
+    _event: APIGatewayProxyEventV2,
+    responseStream: ResponseStream,
+  ): Promise<void> {
+    const messageEndpoint = '/message';
     const server = new McpServer({
       name: 'MCP Lambda Server',
       version: '1.0.7',
@@ -140,6 +133,25 @@ export const handler = streamifyResponse(
           Attributes: {
             FifoQueue: 'true',
             ContentBasedDeduplication: 'true',
+            Policy: JSON.stringify({
+              Version: '2012-10-17',
+              Statement: [
+                {
+                  Sid: 'AllowLambdaAccess',
+                  Effect: 'Allow',
+                  Principal: {
+                    AWS: [MCP_EXECUTION_ROLE_ARN],
+                  },
+                  Action: [
+                    'sqs:SendMessage',
+                    'sqs:ReceiveMessage',
+                    'sqs:DeleteMessage',
+                    'sqs:GetQueueAttributes',
+                    'sqs:GetQueueUrl',
+                  ],
+                },
+              ],
+            }),
           },
         }),
       );
@@ -151,6 +163,11 @@ export const handler = streamifyResponse(
       await server.connect(transport);
 
       void (async (): Promise<void> => {
+        const controller = new AbortController();
+        responseStream.on('close', () => {
+          controller.abort();
+        });
+
         const receiveParams = {
           QueueUrl,
           MaxNumberOfMessages: 10,
@@ -161,6 +178,9 @@ export const handler = streamifyResponse(
           try {
             const { Messages = [] } = await sqsClient.send(
               new ReceiveMessageCommand(receiveParams),
+              {
+                abortSignal: controller.signal,
+              },
             );
 
             if (responseStream.destroyed) break;
@@ -179,6 +199,9 @@ export const handler = streamifyResponse(
             }
           } catch (error) {
             if (!responseStream.destroyed) {
+              if ((error as Error).name === 'AbortError') {
+                break;
+              }
               console.error('Error receiving messages:', error);
               await new Promise(resolve => setTimeout(resolve, 1000));
             }
@@ -202,5 +225,5 @@ export const handler = streamifyResponse(
       console.error('Error in SSE setup:', error);
       throw error;
     }
-  },
-);
+  };
+}

@@ -1,3 +1,5 @@
+import { EventEmitter } from 'events';
+
 import {
   SQSClient,
   GetQueueUrlCommand,
@@ -6,15 +8,24 @@ import {
 } from '@aws-sdk/client-sqs';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { mockClient } from 'aws-sdk-client-mock';
+import { ResponseStream } from 'lambda-stream';
 
 // Set required environment variables before importing handler
 process.env.AWS_REGION = 'us-east-1';
 
-import { handler } from '../lambdas/message';
+import { getMessageHandler } from '../lambdas/mcp/message';
 
 const sqsMock = mockClient(SQSClient);
+const handleMessage = getMessageHandler();
 
 describe('Message Lambda', () => {
+  let mockResponseStream: ResponseStream & {
+    write: jest.Mock;
+    end: jest.Mock;
+    on: jest.Mock;
+    destroyed: boolean;
+  };
+
   const OLD_ENV = process.env;
 
   beforeEach(() => {
@@ -22,6 +33,21 @@ describe('Message Lambda', () => {
     process.env = { ...OLD_ENV };
     process.env.AWS_REGION = 'us-east-1';
     sqsMock.reset();
+
+    mockResponseStream = new ResponseStream() as ResponseStream & {
+      write: jest.Mock;
+      end: jest.Mock;
+      on: jest.Mock;
+      destroyed: boolean;
+    };
+    mockResponseStream.write = jest.fn();
+    mockResponseStream.end = jest.fn();
+    mockResponseStream.destroyed = false;
+
+    Object.setPrototypeOf(mockResponseStream, EventEmitter.prototype);
+    EventEmitter.call(mockResponseStream);
+
+    jest.spyOn(mockResponseStream, 'on');
   });
 
   afterAll(() => {
@@ -32,6 +58,7 @@ describe('Message Lambda', () => {
     method = 'POST',
     path = '/message',
     body?: string,
+    queryStringParameters: Record<string, string> = {},
   ): APIGatewayProxyEventV2 => ({
     version: '2.0',
     routeKey: `${method} ${path}`,
@@ -58,42 +85,53 @@ describe('Message Lambda', () => {
     },
     body,
     isBase64Encoded: false,
-  });
-
-  it('should return 405 for non-POST requests', async () => {
-    const event = createEvent('GET', '/message');
-    const response = await handler(event);
-    expect(response.statusCode).toBe(405);
-    expect(JSON.parse(response.body as string)).toEqual({
-      error: 'Method not allowed',
-    });
-  });
-
-  it('should return 405 for incorrect paths', async () => {
-    const event = createEvent('POST', '/wrong-path');
-    const response = await handler(event);
-    expect(response.statusCode).toBe(405);
-    expect(JSON.parse(response.body as string)).toEqual({
-      error: 'Method not allowed',
-    });
+    queryStringParameters,
   });
 
   it('should return 400 for missing body', async () => {
-    const event = createEvent('POST', '/message');
-    const response = await handler(event);
-    expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body as string)).toEqual({
-      error: 'Missing request body',
+    const event = createEvent('POST', '/message', undefined, {
+      sessionId: '123e4567-e89b-12d3-a456-426614174000',
     });
+    await handleMessage(event, mockResponseStream);
+    expect(mockResponseStream.write).toHaveBeenCalledWith(
+      JSON.stringify({
+        error: 'Missing request body, expected a raw JSON-RPC message string',
+      }),
+    );
+    expect(mockResponseStream.end).toHaveBeenCalled();
+  });
+
+  it('should return 400 for missing sessionId', async () => {
+    const event = createEvent(
+      'POST',
+      '/message',
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'testMethod',
+        params: {},
+        id: 1,
+      }),
+    );
+    await handleMessage(event, mockResponseStream);
+    expect(mockResponseStream.write).toHaveBeenCalledWith(
+      JSON.stringify({
+        error: 'Missing sessionId query parameter',
+      }),
+    );
+    expect(mockResponseStream.end).toHaveBeenCalled();
   });
 
   it('should return 400 for invalid request format', async () => {
-    const event = createEvent('POST', '/message', JSON.stringify({ invalid: 'format' }));
-    const response = await handler(event);
-    expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body as string)).toEqual({
-      error: 'Invalid request format',
+    const event = createEvent('POST', '/message', 'invalid json', {
+      sessionId: '123e4567-e89b-12d3-a456-426614174000',
     });
+    await handleMessage(event, mockResponseStream);
+    expect(mockResponseStream.write).toHaveBeenCalledWith(
+      JSON.stringify({
+        error: 'Invalid JSON-RPC format',
+      }),
+    );
+    expect(mockResponseStream.end).toHaveBeenCalled();
   });
 
   it('should return 404 when queue does not exist', async () => {
@@ -110,16 +148,21 @@ describe('Message Lambda', () => {
       'POST',
       '/message',
       JSON.stringify({
-        sessionId: '123e4567-e89b-12d3-a456-426614174000',
-        message: 'test message',
+        jsonrpc: '2.0',
+        method: 'testMethod',
+        params: {},
+        id: 1,
       }),
+      { sessionId: '123e4567-e89b-12d3-a456-426614174000' },
     );
 
-    const response = await handler(event);
-    expect(response.statusCode).toBe(404);
-    expect(JSON.parse(response.body as string)).toEqual({
-      error: 'Session not found',
-    });
+    await handleMessage(event, mockResponseStream);
+    expect(mockResponseStream.write).toHaveBeenCalledWith(
+      JSON.stringify({
+        error: 'Session not found',
+      }),
+    );
+    expect(mockResponseStream.end).toHaveBeenCalled();
   });
 
   it('should successfully send message to queue', async () => {
@@ -133,16 +176,21 @@ describe('Message Lambda', () => {
       'POST',
       '/message',
       JSON.stringify({
-        sessionId: '123e4567-e89b-12d3-a456-426614174000',
-        message: 'test message',
+        jsonrpc: '2.0',
+        method: 'testMethod',
+        params: {},
+        id: 1,
       }),
+      { sessionId: '123e4567-e89b-12d3-a456-426614174000' },
     );
 
-    const response = await handler(event);
-    expect(response.statusCode).toBe(202);
-    expect(JSON.parse(response.body as string)).toEqual({
-      status: 'Message accepted',
-    });
+    await handleMessage(event, mockResponseStream);
+    expect(mockResponseStream.write).toHaveBeenCalledWith(
+      JSON.stringify({
+        status: 'Message accepted',
+      }),
+    );
+    expect(mockResponseStream.end).toHaveBeenCalled();
     expect(sqsMock.calls()).toHaveLength(2);
   });
 
@@ -153,15 +201,20 @@ describe('Message Lambda', () => {
       'POST',
       '/message',
       JSON.stringify({
-        sessionId: '123e4567-e89b-12d3-a456-426614174000',
-        message: 'test message',
+        jsonrpc: '2.0',
+        method: 'testMethod',
+        params: {},
+        id: 1,
       }),
+      { sessionId: '123e4567-e89b-12d3-a456-426614174000' },
     );
 
-    const response = await handler(event);
-    expect(response.statusCode).toBe(500);
-    expect(JSON.parse(response.body as string)).toEqual({
-      error: 'Internal server error',
-    });
+    await handleMessage(event, mockResponseStream);
+    expect(mockResponseStream.write).toHaveBeenCalledWith(
+      JSON.stringify({
+        error: 'Internal server error',
+      }),
+    );
+    expect(mockResponseStream.end).toHaveBeenCalled();
   });
 });

@@ -44,7 +44,7 @@ export async function deploy(options: DeployOptions = {}): Promise<DeployResult>
     '--region',
     region,
     '--capabilities',
-    'CAPABILITY_IAM',
+    'CAPABILITY_NAMED_IAM',
     '--no-confirm-changeset',
   ];
 
@@ -71,15 +71,15 @@ export async function deploy(options: DeployOptions = {}): Promise<DeployResult>
   const { Stacks } = await cfn.describeStacks({ StackName: stackName });
   const outputs = Stacks?.[0]?.Outputs || [];
 
-  const sseUrl = outputs.find(o => o.OutputKey === 'SseFunctionUrl')?.OutputValue;
+  const mcpUrl = outputs.find(o => o.OutputKey === 'McpFunctionUrl')?.OutputValue;
   const registrationUrl = outputs.find(o => o.OutputKey === 'RegistrationFunctionUrl')?.OutputValue;
 
-  if (!sseUrl || !registrationUrl) {
+  if (!mcpUrl || !registrationUrl) {
     throw new Error('Failed to get function URLs from stack outputs');
   }
 
   return {
-    sseUrl: new URL('/sse', sseUrl).toString(),
+    sseUrl: new URL('/sse', mcpUrl).toString(),
     registrationUrl: new URL('/', registrationUrl).toString(),
   };
 }

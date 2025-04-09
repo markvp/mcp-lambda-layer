@@ -2,7 +2,7 @@ import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { ResponseStream } from 'lambda-stream';
 
-import { LambdaSSETransport } from '../lambdas/sse/lambda-sse-transport';
+import { LambdaSSETransport } from '../lambdas/mcp/lambda-sse-transport';
 
 describe('LambdaSSETransport', () => {
   let transport: LambdaSSETransport;

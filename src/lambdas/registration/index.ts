@@ -22,9 +22,9 @@ import {
   createRegistrationId,
 } from '../../types/registration';
 
-const { AWS_REGION, REGISTRATION_TABLE_NAME, SSE_FUNCTION_NAME } = process.env;
+const { AWS_REGION, REGISTRATION_TABLE_NAME, MCP_FUNCTION_NAME } = process.env;
 
-if (!AWS_REGION || !REGISTRATION_TABLE_NAME || !SSE_FUNCTION_NAME) {
+if (!AWS_REGION || !REGISTRATION_TABLE_NAME || !MCP_FUNCTION_NAME) {
   throw new Error('Required environment variables are not set');
 }
 
@@ -39,7 +39,7 @@ async function updateLambdaPermissions(
   if (action === 'add') {
     await lambdaClient.send(
       new AddPermissionCommand({
-        FunctionName: SSE_FUNCTION_NAME,
+        FunctionName: MCP_FUNCTION_NAME,
         StatementId: `MCP-Execute-${registrationId}`,
         Action: 'lambda:InvokeFunction',
         Principal: 'lambda.amazonaws.com',
@@ -49,7 +49,7 @@ async function updateLambdaPermissions(
   } else {
     await lambdaClient.send(
       new RemovePermissionCommand({
-        FunctionName: SSE_FUNCTION_NAME,
+        FunctionName: MCP_FUNCTION_NAME,
         StatementId: `MCP-Execute-${registrationId}`,
       }),
     );

@@ -1,9 +1,12 @@
+import { EventEmitter } from 'events';
+
 import { DynamoDBClient, ScanCommand } from '@aws-sdk/client-dynamodb';
 import {
   SQSClient,
   CreateQueueCommand,
   DeleteQueueCommand,
   GetQueueAttributesCommand,
+  ReceiveMessageCommand,
 } from '@aws-sdk/client-sqs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
@@ -14,46 +17,52 @@ import { ResponseStream } from 'lambda-stream';
 process.env.AWS_REGION = 'us-east-1';
 process.env.REGISTRATION_TABLE_NAME = 'test-table';
 
-import { handler } from '../lambdas/sse';
-import { LambdaSSETransport } from '../lambdas/sse/lambda-sse-transport';
+import { LambdaSSETransport } from '../lambdas/mcp/lambda-sse-transport';
+import { getSseHandler } from '../lambdas/mcp/sse';
+
+let handleSse: ReturnType<typeof getSseHandler>;
 
 const dynamoMock = mockClient(DynamoDBClient);
 const sqsMock = mockClient(SQSClient);
 
 jest.mock('@modelcontextprotocol/sdk/server/mcp');
-jest.mock('../lambdas/sse/lambda-sse-transport');
-
-class MockResponseStream extends ResponseStream {
-  public write = jest.fn();
-  public end = jest.fn();
-  public on = jest.fn();
-  public destroyed = false;
-
-  public constructor() {
-    super();
-    this.on.mockImplementation((event: string, callback: () => void) => {
-      if (event === 'close') {
-        callback();
-      }
-      return this;
-    });
-  }
-}
+jest.mock('../lambdas/mcp/lambda-sse-transport');
 
 describe('SSE Lambda', () => {
   const OLD_ENV = process.env;
-  let mockResponseStream: MockResponseStream;
+  let mockResponseStream: ResponseStream & {
+    write: jest.Mock;
+    end: jest.Mock;
+    on: jest.Mock;
+    destroyed: boolean;
+  };
 
   beforeEach(() => {
     jest.resetModules();
     process.env = { ...OLD_ENV };
     process.env.AWS_REGION = 'us-east-1';
     process.env.REGISTRATION_TABLE_NAME = 'test-table';
+    process.env.MCP_EXECUTION_ROLE_ARN = 'arn:aws:iam::123456789012:role/mcp-test-role';
     process.env.MESSAGE_FUNCTION_URL = 'https://test-message-url';
     dynamoMock.reset();
     sqsMock.reset();
     jest.clearAllMocks();
-    mockResponseStream = new MockResponseStream();
+    mockResponseStream = new ResponseStream() as ResponseStream & {
+      write: jest.Mock;
+      end: jest.Mock;
+      on: jest.Mock;
+      destroyed: boolean;
+    };
+    mockResponseStream.write = jest.fn();
+    mockResponseStream.end = jest.fn();
+    mockResponseStream.destroyed = false;
+
+    Object.setPrototypeOf(mockResponseStream, EventEmitter.prototype);
+    EventEmitter.call(mockResponseStream);
+
+    jest.spyOn(mockResponseStream, 'on');
+
+    handleSse = getSseHandler();
   });
 
   afterAll(() => {
@@ -96,20 +105,6 @@ describe('SSE Lambda', () => {
     parameters: { S: JSON.stringify({ input: 'string' }) },
   };
 
-  it('should return error for non-GET requests', async () => {
-    const event = createEvent('POST', '/sse');
-    await expect(handler(event, mockResponseStream)).rejects.toThrow(
-      'Invalid request method or path',
-    );
-  });
-
-  it('should return error for incorrect path', async () => {
-    const event = createEvent('GET', '/wrong-path');
-    await expect(handler(event, mockResponseStream)).rejects.toThrow(
-      'Invalid request method or path',
-    );
-  });
-
   it('should initialize SSE connection with registered tools', async () => {
     const event = createEvent();
 
@@ -121,7 +116,11 @@ describe('SSE Lambda', () => {
       .on(CreateQueueCommand)
       .resolves({ QueueUrl: 'test-queue-url' })
       .on(GetQueueAttributesCommand)
-      .resolves({ Attributes: { QueueArn: 'test-queue-arn' } });
+      .resolves({ Attributes: { QueueArn: 'test-queue-arn' } })
+      .on(ReceiveMessageCommand)
+      .resolves({ Messages: [] })
+      .on(DeleteQueueCommand)
+      .resolves({});
 
     // Create a mock for the transport
     const mockTransport = {
@@ -131,25 +130,19 @@ describe('SSE Lambda', () => {
     };
     (LambdaSSETransport as jest.Mock).mockImplementation(() => mockTransport);
 
-    // Mock MCP server
     const mockServer = {
       tool: jest.fn(),
       connect: jest.fn().mockResolvedValueOnce(undefined),
     };
     (McpServer as jest.Mock).mockImplementation(() => mockServer);
 
-    // Setup cleanup handler
-    mockResponseStream.on.mockImplementation((event: string, callback: () => void) => {
-      if (event === 'close') {
-        callback();
-      }
-      return mockResponseStream;
-    });
+    const ssePromise = handleSse(event, mockResponseStream);
 
-    // Run handler
-    await handler(event, mockResponseStream);
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
-    // Verify MCP server setup
+    mockResponseStream.emit('close');
+    await ssePromise;
+
     expect(mockServer.tool).toHaveBeenCalledWith(
       'example',
       'An example tool',
@@ -158,19 +151,13 @@ describe('SSE Lambda', () => {
     );
 
     expect(mockServer.connect).toHaveBeenCalledWith(mockTransport);
-
-    // Verify queue cleanup on close
-    expect(sqsMock.commandCalls(DeleteQueueCommand)).toHaveLength(1);
-    expect(sqsMock.commandCalls(DeleteQueueCommand)[0].args[0].input).toEqual({
-      QueueUrl: 'test-queue-url',
-    });
   });
 
   it('should handle registration loading errors', async () => {
     const event = createEvent();
     dynamoMock.on(ScanCommand).rejects(new Error('DynamoDB error'));
 
-    await expect(handler(event, mockResponseStream)).rejects.toThrow('DynamoDB error');
+    await expect(handleSse(event, mockResponseStream)).rejects.toThrow('DynamoDB error');
   });
 
   it('should handle queue creation errors', async () => {
@@ -178,7 +165,7 @@ describe('SSE Lambda', () => {
     dynamoMock.on(ScanCommand).resolves({ Items: [] });
     sqsMock.on(CreateQueueCommand).rejects(new Error('SQS error'));
 
-    await expect(handler(event, mockResponseStream)).rejects.toThrow('SQS error');
+    await expect(handleSse(event, mockResponseStream)).rejects.toThrow('SQS error');
   });
 
   it('should clean up resources on connection close', async () => {
@@ -191,6 +178,8 @@ describe('SSE Lambda', () => {
       .resolves({ QueueUrl: 'test-queue-url' })
       .on(GetQueueAttributesCommand)
       .resolves({ Attributes: { QueueArn: 'test-queue-arn' } })
+      .on(ReceiveMessageCommand)
+      .resolves({ Messages: [] })
       .on(DeleteQueueCommand)
       .resolves({});
 
@@ -208,9 +197,25 @@ describe('SSE Lambda', () => {
     };
     (McpServer as jest.Mock).mockImplementation(() => mockServer);
 
-    // Run handler and trigger close
-    await handler(event, mockResponseStream);
-    expect(mockResponseStream.on).toHaveBeenCalledWith('close', expect.any(Function));
+    const ssePromise = handleSse(event, mockResponseStream);
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    const abortSpy = jest.spyOn(AbortController.prototype, 'abort');
+    const onCalls = (mockResponseStream.on as jest.Mock).mock.calls as [string, () => void][];
+    const closeCallback = onCalls.find(([event]) => event === 'close')?.[1];
+    expect(typeof closeCallback).toBe('function');
+
+    const wrappedCloseSpy = jest.fn(closeCallback);
+    mockResponseStream.off('close', closeCallback!);
+    mockResponseStream.on('close', wrappedCloseSpy);
+
+    mockResponseStream.emit('close');
+
+    await ssePromise;
+
+    expect(abortSpy).toHaveBeenCalled();
+    expect(wrappedCloseSpy).toHaveBeenCalled();
 
     // Verify queue deletion
     expect(sqsMock.commandCalls(DeleteQueueCommand)).toHaveLength(1);

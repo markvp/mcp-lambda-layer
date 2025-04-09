@@ -50,6 +50,51 @@ Conditions:
       - "true"
 
 Resources:
+  McpFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${StackIdentifier}-mcp-exec-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: MCPExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:CreateQueue
+                  - sqs:DeleteQueue
+                  - sqs:GetQueueAttributes
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                Resource:
+                  - !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:mcp-session-*.fifo
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:BatchGetItem
+                  - dynamodb:DescribeTable
+                Resource:
+                  - !GetAtt RegistrationTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
   RegistrationTable:
     Type: AWS::Serverless::SimpleTable
     Properties:
@@ -73,36 +118,19 @@ Resources:
       IpProtocol: "-1"
       SourceSecurityGroupId: !Ref LambdaSecurityGroup
 
-  SseFunction:
+  McpFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${StackIdentifier}-mcp-sse
-      CodeUri: dist/lambdas/sse
+      FunctionName: !Sub ${StackIdentifier}-mcp
+      CodeUri: dist/lambdas/mcp
       Handler: index.handler
       Runtime: nodejs20.x
       Timeout: 300
-      Policies:
-        - Fn::If:
-            - UseVpc
-            - VPCAccessPolicy: {}
-            - !Ref AWS::NoValue
-        - DynamoDBReadPolicy:
-            TableName: !Ref RegistrationTable
-        - Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - sqs:CreateQueue
-                - sqs:ReceiveMessage
-                - sqs:DeleteMessage
-                - sqs:GetQueueAttributes
-                - sqs:DeleteQueue
-              Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:mcp-session-*.fifo
-
+      Role: !GetAtt McpFunctionRole.Arn
       Environment:
         Variables:
           REGISTRATION_TABLE_NAME: !Ref RegistrationTable
-          MESSAGE_FUNCTION_URL: !GetAtt MessageFunctionUrl.FunctionUrl
+          MCP_EXECUTION_ROLE_ARN: !GetAtt McpFunctionRole.Arn
       VpcConfig: !If
         - UseVpc
         - SubnetIds: !Ref SubnetIds
@@ -110,55 +138,17 @@ Resources:
             - !Ref LambdaSecurityGroup
         - !Ref AWS::NoValue
 
-  SseFunctionUrl:
+  McpFunctionUrl:
     Type: AWS::Lambda::Url
     Properties:
-      TargetFunctionArn: !GetAtt SseFunction.Arn
-      AuthType: AWS_IAM
+      TargetFunctionArn: !GetAtt McpFunction.Arn
+      AuthType: NONE
       InvokeMode: RESPONSE_STREAM
       Cors:
         AllowOrigins:
           - "*"
         AllowMethods:
           - GET
-        AllowHeaders:
-          - Content-Type
-
-  MessageFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${StackIdentifier}-mcp-message
-      CodeUri: dist/lambdas/message
-      Handler: index.handler
-      Runtime: nodejs20.x
-      Policies:
-        - Fn::If:
-            - UseVpc
-            - VPCAccessPolicy: {}
-            - !Ref AWS::NoValue
-        - Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - sqs:SendMessage
-                - sqs:GetQueueAttributes
-              Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:mcp-session-*.fifo
-      VpcConfig: !If
-        - UseVpc
-        - SubnetIds: !Ref SubnetIds
-          SecurityGroupIds:
-            - !Ref LambdaSecurityGroup
-        - !Ref AWS::NoValue
-
-  MessageFunctionUrl:
-    Type: AWS::Lambda::Url
-    Properties:
-      TargetFunctionArn: !GetAtt MessageFunction.Arn
-      AuthType: AWS_IAM
-      Cors:
-        AllowOrigins:
-          - "*"
-        AllowMethods:
           - POST
         AllowHeaders:
           - Content-Type
@@ -170,24 +160,14 @@ Resources:
       CodeUri: dist/lambdas/registration
       Handler: index.handler
       Runtime: nodejs20.x
-      Policies:
-        - Fn::If:
-            - UseVpc
-            - VPCAccessPolicy: {}
-            - !Ref AWS::NoValue
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RegistrationTable
-        - Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - lambda:AddPermission
-                - lambda:RemovePermission
-              Resource: "*"
       Environment:
         Variables:
           REGISTRATION_TABLE_NAME: !Ref RegistrationTable
-          SSE_FUNCTION_NAME: !Ref SseFunction
+          MCP_FUNCTION_NAME: !Ref McpFunction
+      Policies:
+        - VPCAccessPolicy: {}
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RegistrationTable
       VpcConfig: !If
         - UseVpc
         - SubnetIds: !Ref SubnetIds
@@ -199,7 +179,7 @@ Resources:
     Type: AWS::Lambda::Url
     Properties:
       TargetFunctionArn: !GetAtt RegistrationFunction.Arn
-      AuthType: AWS_IAM
+      AuthType: NONE
       Cors:
         AllowOrigins:
           - "*"
@@ -212,9 +192,9 @@ Resources:
           - Content-Type
 
 Outputs:
-  SseFunctionUrl:
-    Description: SSE Function URL
-    Value: !GetAtt SseFunctionUrl.FunctionUrl
+  McpFunctionUrl:
+    Description: MCP Function URL
+    Value: !GetAtt McpFunctionUrl.FunctionUrl
   RegistrationFunctionUrl:
     Description: Registration Function URL
     Value: !GetAtt RegistrationFunctionUrl.FunctionUrl
