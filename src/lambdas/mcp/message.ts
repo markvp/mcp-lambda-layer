@@ -1,20 +1,23 @@
 import {
-  SQSClient,
-  GetQueueUrlCommand,
-  SendMessageCommand,
-  SQSServiceException,
-} from '@aws-sdk/client-sqs';
+  DynamoDBClient,
+  GetItemCommand,
+  UpdateItemCommand,
+  DynamoDBServiceException,
+} from '@aws-sdk/client-dynamodb';
 import { JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { ResponseStream } from 'lambda-stream';
 
 export function getMessageHandler() {
-  const { AWS_REGION } = process.env;
+  const { AWS_REGION, SESSION_TABLE_NAME } = process.env;
   if (!AWS_REGION) {
     throw new Error('AWS_REGION environment variable is required');
   }
+  if (!SESSION_TABLE_NAME) {
+    throw new Error('SESSION_TABLE_NAME environment variable is required');
+  }
 
-  const sqsClient = new SQSClient({ region: AWS_REGION });
+  const dynamoDBClient = new DynamoDBClient({ region: AWS_REGION });
 
   return async function handleMessage(
     event: APIGatewayProxyEventV2,
@@ -44,27 +47,52 @@ export function getMessageHandler() {
       responseStream.end();
     }
 
-    const queueName = `mcp-session-${sessionId}.fifo`;
-
     try {
-      console.log('Finding url for SQS queue:', queueName);
-      const { QueueUrl } = await sqsClient.send(new GetQueueUrlCommand({ QueueName: queueName }));
+      console.log('sessionId', sessionId);
+      const { Item } = await dynamoDBClient.send(
+        new GetItemCommand({
+          TableName: SESSION_TABLE_NAME,
+          Key: {
+            sessionId: { S: sessionId! },
+          },
+        }),
+      );
 
-      console.log('Sending message to SQS queue:', QueueUrl);
-      await sqsClient.send(
-        new SendMessageCommand({
-          QueueUrl,
-          MessageBody: body,
-          MessageGroupId: sessionId,
+      if (!Item) {
+        responseStream.write(JSON.stringify({ error: 'Session invalid' }));
+        responseStream.end();
+        return;
+      }
+
+      await dynamoDBClient.send(
+        new UpdateItemCommand({
+          TableName: SESSION_TABLE_NAME,
+          Key: {
+            sessionId: { S: sessionId! },
+          },
+          UpdateExpression:
+            'SET messageQueue = list_append(if_not_exists(messageQueue, :emptyList), :newItem)',
+          ExpressionAttributeValues: {
+            ':emptyList': { L: [] },
+            ':newItem': {
+              L: [
+                {
+                  M: {
+                    payload: { S: body! },
+                  },
+                },
+              ],
+            },
+          },
         }),
       );
 
       responseStream.write(JSON.stringify({ status: 'Message accepted' }));
       responseStream.end();
     } catch (error) {
-      if (error instanceof SQSServiceException && error.name === 'QueueDoesNotExist') {
+      if (error instanceof DynamoDBServiceException) {
         console.log(error);
-        responseStream.write(JSON.stringify({ error: 'Session not found' }));
+        responseStream.write(JSON.stringify({ error: 'Internal server error' }));
         responseStream.end();
       } else {
         responseStream.write(JSON.stringify({ error: 'Internal server error' }));

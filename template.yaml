@@ -50,57 +50,20 @@ Conditions:
       - "true"
 
 Resources:
-  McpFunctionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub ${StackIdentifier}-mcp-exec-role
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-      Policies:
-        - PolicyName: MCPExecutionPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - sqs:CreateQueue
-                  - sqs:DeleteQueue
-                  - sqs:GetQueueAttributes
-                  - sqs:SendMessage
-                  - sqs:ReceiveMessage
-                  - sqs:DeleteMessage
-                Resource:
-                  - !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:mcp-session-*.fifo
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:Scan
-                  - dynamodb:Query
-                  - dynamodb:BatchGetItem
-                  - dynamodb:DescribeTable
-                Resource:
-                  - !GetAtt RegistrationTable.Arn
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: "*"
-
   RegistrationTable:
     Type: AWS::Serverless::SimpleTable
     Properties:
       TableName: !Sub ${StackIdentifier}-mcp-registrations
       PrimaryKey:
         Name: id
+        Type: String
+
+  SessionTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: !Sub ${StackIdentifier}-mcp-sessions
+      PrimaryKey:
+        Name: sessionId
         Type: String
 
   LambdaSecurityGroup:
@@ -126,11 +89,17 @@ Resources:
       Handler: index.handler
       Runtime: nodejs20.x
       Timeout: 300
-      Role: !GetAtt McpFunctionRole.Arn
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSLambdaVPCAccessExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistrationTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SessionTable
       Environment:
         Variables:
           REGISTRATION_TABLE_NAME: !Ref RegistrationTable
-          MCP_EXECUTION_ROLE_ARN: !GetAtt McpFunctionRole.Arn
+          SESSION_TABLE_NAME: !Ref SessionTable
       VpcConfig: !If
         - UseVpc
         - SubnetIds: !Ref SubnetIds
@@ -168,6 +137,7 @@ Resources:
         - VPCAccessPolicy: {}
         - DynamoDBCrudPolicy:
             TableName: !Ref RegistrationTable
+        - !Ref McpModifyPermissionsPolicy
       VpcConfig: !If
         - UseVpc
         - SubnetIds: !Ref SubnetIds
@@ -190,6 +160,19 @@ Resources:
           - DELETE
         AllowHeaders:
           - Content-Type
+
+  McpModifyPermissionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${StackIdentifier}-mcp-modify-permissions
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:AddPermission
+              - lambda:RemovePermission
+            Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${McpFunction}
 
 Outputs:
   McpFunctionUrl:

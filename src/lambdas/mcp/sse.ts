@@ -1,12 +1,12 @@
-import { DynamoDBClient, ScanCommand } from '@aws-sdk/client-dynamodb';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
-  SQSClient,
-  CreateQueueCommand,
-  DeleteQueueCommand,
-  ReceiveMessageCommand,
-  DeleteMessageCommand,
-} from '@aws-sdk/client-sqs';
+  DynamoDBClient,
+  ScanCommand,
+  PutItemCommand,
+  DeleteItemCommand,
+  GetItemCommand,
+  UpdateItemCommand,
+} from '@aws-sdk/client-dynamodb';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ListResourcesResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
@@ -15,17 +15,17 @@ import { z } from 'zod';
 
 import { ResponseBodySchema, decodeLambdaResponse } from '../../types/lambda';
 import { ResourceParameters, fromDynamoFormat } from '../../types/registration';
+import { jsonToZodSchema } from '../../utils/zod-from-json';
 
 import { LambdaSSETransport } from './lambda-sse-transport';
 
 export function getSseHandler() {
-  const { AWS_REGION, REGISTRATION_TABLE_NAME, MCP_EXECUTION_ROLE_ARN } = process.env;
+  const { AWS_REGION, REGISTRATION_TABLE_NAME, SESSION_TABLE_NAME } = process.env;
 
-  if (!AWS_REGION || !REGISTRATION_TABLE_NAME || !MCP_EXECUTION_ROLE_ARN) {
+  if (!AWS_REGION || !REGISTRATION_TABLE_NAME || !SESSION_TABLE_NAME) {
     throw new Error('Required environment variables are not set');
   }
 
-  const sqsClient = new SQSClient({ region: AWS_REGION });
   const dynamodbClient = new DynamoDBClient({ region: AWS_REGION });
   const lambdaClient = new LambdaClient({ region: AWS_REGION });
 
@@ -72,7 +72,7 @@ export function getSseHandler() {
           server.tool(
             registration.name,
             registration.description,
-            registration.parameters,
+            jsonToZodSchema(registration.parameters).shape,
             async (args, extra) => {
               return invokeLambda(registration.lambdaArn, { args, extra }, ResponseBodySchema.tool);
             },
@@ -109,7 +109,7 @@ export function getSseHandler() {
           server.prompt(
             registration.name,
             registration.description,
-            registration.parameters,
+            jsonToZodSchema(registration.parameters).shape,
             async (args, extra) => {
               return invokeLambda(
                 registration.lambdaArn,
@@ -123,104 +123,72 @@ export function getSseHandler() {
     }
 
     const transport = new LambdaSSETransport(messageEndpoint, responseStream);
-    const { sessionId } = transport;
-    const queueName = `mcp-session-${sessionId}.fifo`;
+    const sessionId: string = transport.sessionId;
+    const controller = new AbortController();
 
     try {
-      const { QueueUrl } = await sqsClient.send(
-        new CreateQueueCommand({
-          QueueName: queueName,
-          Attributes: {
-            FifoQueue: 'true',
-            ContentBasedDeduplication: 'true',
-            Policy: JSON.stringify({
-              Version: '2012-10-17',
-              Statement: [
-                {
-                  Sid: 'AllowLambdaAccess',
-                  Effect: 'Allow',
-                  Principal: {
-                    AWS: [MCP_EXECUTION_ROLE_ARN],
-                  },
-                  Action: [
-                    'sqs:SendMessage',
-                    'sqs:ReceiveMessage',
-                    'sqs:DeleteMessage',
-                    'sqs:GetQueueAttributes',
-                    'sqs:GetQueueUrl',
-                  ],
-                },
-              ],
-            }),
+      await dynamodbClient.send(
+        new PutItemCommand({
+          TableName: SESSION_TABLE_NAME,
+          Item: {
+            sessionId: { S: sessionId },
           },
         }),
       );
 
-      if (!QueueUrl) {
-        throw new Error('Failed to create SQS queue');
-      }
-
       await server.connect(transport);
 
-      void (async (): Promise<void> => {
-        const controller = new AbortController();
-        responseStream.on('close', () => {
-          controller.abort();
-        });
+      responseStream.on('close', (): void => {
+        console.log('Connection closed, cleaning up resources', sessionId);
+        controller.abort();
+        void dynamodbClient.send(
+          new DeleteItemCommand({
+            TableName: SESSION_TABLE_NAME,
+            Key: {
+              sessionId: { S: sessionId },
+            },
+          }),
+        );
+      });
 
-        const receiveParams = {
-          QueueUrl,
-          MaxNumberOfMessages: 10,
-          WaitTimeSeconds: 20,
-        };
+      while (!controller.signal.aborted) {
+        if (controller.signal.aborted) {
+          break;
+        }
 
-        while (!responseStream.destroyed) {
-          try {
-            const { Messages = [] } = await sqsClient.send(
-              new ReceiveMessageCommand(receiveParams),
-              {
-                abortSignal: controller.signal,
+        const { Item } = await dynamodbClient.send(
+          new GetItemCommand({
+            TableName: SESSION_TABLE_NAME,
+            Key: {
+              sessionId: { S: sessionId },
+            },
+          }),
+        );
+
+        const queue = Item?.messageQueue?.L ?? [];
+
+        if (queue.length > 0) {
+          await dynamodbClient.send(
+            new UpdateItemCommand({
+              TableName: SESSION_TABLE_NAME,
+              Key: {
+                sessionId: { S: sessionId },
               },
-            );
+              UpdateExpression: 'REMOVE messageQueue',
+            }),
+          );
+        }
 
-            if (responseStream.destroyed) break;
-
-            for (const { Body, ReceiptHandle } of Messages) {
-              if (Body) {
-                transport.handleMessage(Body);
-              }
-              if (ReceiptHandle) {
-                await sqsClient.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle }));
-              }
-            }
-
-            if (Messages.length === 0) {
-              await new Promise(resolve => setTimeout(resolve, 100));
-            }
-          } catch (error) {
-            if (!responseStream.destroyed) {
-              if ((error as Error).name === 'AbortError') {
-                break;
-              }
-              console.error('Error receiving messages:', error);
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            }
+        for (const entry of queue) {
+          const message = entry.M;
+          const payload = message?.payload?.S;
+          if (typeof payload === 'string') {
+            transport.handleMessage(payload);
           }
         }
-      })();
 
-      await new Promise<void>(resolve => {
-        responseStream.on('close', () => {
-          void (async (): Promise<void> => {
-            try {
-              await sqsClient.send(new DeleteQueueCommand({ QueueUrl }));
-            } catch (error) {
-              console.error('Error deleting queue:', error);
-            }
-            resolve();
-          })();
-        });
-      });
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
     } catch (error) {
       console.error('Error in SSE setup:', error);
       throw error;

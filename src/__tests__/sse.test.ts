@@ -1,17 +1,18 @@
 import { EventEmitter } from 'events';
 
-import { DynamoDBClient, ScanCommand } from '@aws-sdk/client-dynamodb';
 import {
-  SQSClient,
-  CreateQueueCommand,
-  DeleteQueueCommand,
-  GetQueueAttributesCommand,
-  ReceiveMessageCommand,
-} from '@aws-sdk/client-sqs';
+  DynamoDBClient,
+  ScanCommand,
+  PutItemCommand,
+  GetItemCommand,
+  UpdateItemCommand,
+  DeleteItemCommand,
+} from '@aws-sdk/client-dynamodb';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { mockClient } from 'aws-sdk-client-mock';
 import { ResponseStream } from 'lambda-stream';
+import { z } from 'zod';
 
 // Set required environment variables before importing handler
 process.env.AWS_REGION = 'us-east-1';
@@ -23,7 +24,6 @@ import { getSseHandler } from '../lambdas/mcp/sse';
 let handleSse: ReturnType<typeof getSseHandler>;
 
 const dynamoMock = mockClient(DynamoDBClient);
-const sqsMock = mockClient(SQSClient);
 
 jest.mock('@modelcontextprotocol/sdk/server/mcp');
 jest.mock('../lambdas/mcp/lambda-sse-transport');
@@ -39,13 +39,11 @@ describe('SSE Lambda', () => {
 
   beforeEach(() => {
     jest.resetModules();
-    process.env = { ...OLD_ENV };
+    process.env = { ...OLD_ENV, SESSION_TABLE_NAME: 'test-sessions' };
     process.env.AWS_REGION = 'us-east-1';
     process.env.REGISTRATION_TABLE_NAME = 'test-table';
-    process.env.MCP_EXECUTION_ROLE_ARN = 'arn:aws:iam::123456789012:role/mcp-test-role';
     process.env.MESSAGE_FUNCTION_URL = 'https://test-message-url';
     dynamoMock.reset();
-    sqsMock.reset();
     jest.clearAllMocks();
     mockResponseStream = new ResponseStream() as ResponseStream & {
       write: jest.Mock;
@@ -110,17 +108,11 @@ describe('SSE Lambda', () => {
 
     // Mock successful DynamoDB query
     dynamoMock.on(ScanCommand).resolves({ Items: [mockRegistration] });
-
-    // Mock successful SQS queue creation
-    sqsMock
-      .on(CreateQueueCommand)
-      .resolves({ QueueUrl: 'test-queue-url' })
-      .on(GetQueueAttributesCommand)
-      .resolves({ Attributes: { QueueArn: 'test-queue-arn' } })
-      .on(ReceiveMessageCommand)
-      .resolves({ Messages: [] })
-      .on(DeleteQueueCommand)
-      .resolves({});
+    dynamoMock.on(GetItemCommand).resolvesOnce({
+      Item: {
+        sessionId: { S: 'test-session' },
+      },
+    });
 
     // Create a mock for the transport
     const mockTransport = {
@@ -146,7 +138,7 @@ describe('SSE Lambda', () => {
     expect(mockServer.tool).toHaveBeenCalledWith(
       'example',
       'An example tool',
-      { input: 'string' },
+      expect.objectContaining({ input: expect.any(z.ZodString) as z.ZodType<string> }),
       expect.any(Function),
     );
 
@@ -160,30 +152,15 @@ describe('SSE Lambda', () => {
     await expect(handleSse(event, mockResponseStream)).rejects.toThrow('DynamoDB error');
   });
 
-  it('should handle queue creation errors', async () => {
-    const event = createEvent();
-    dynamoMock.on(ScanCommand).resolves({ Items: [] });
-    sqsMock.on(CreateQueueCommand).rejects(new Error('SQS error'));
-
-    await expect(handleSse(event, mockResponseStream)).rejects.toThrow('SQS error');
-  });
-
   it('should clean up resources on connection close', async () => {
     const event = createEvent();
 
-    // Mock successful initialization
     dynamoMock.on(ScanCommand).resolves({ Items: [] });
-    sqsMock
-      .on(CreateQueueCommand)
-      .resolves({ QueueUrl: 'test-queue-url' })
-      .on(GetQueueAttributesCommand)
-      .resolves({ Attributes: { QueueArn: 'test-queue-arn' } })
-      .on(ReceiveMessageCommand)
-      .resolves({ Messages: [] })
-      .on(DeleteQueueCommand)
-      .resolves({});
+    dynamoMock.on(PutItemCommand).resolves({});
+    dynamoMock.on(GetItemCommand).resolves({ Item: { sessionId: { S: 'test-session' } } });
+    dynamoMock.on(UpdateItemCommand).resolves({});
+    dynamoMock.on(DeleteItemCommand).resolves({});
 
-    // Create basic transport mock
     const mockTransport = {
       sessionId: 'test-session',
       start: jest.fn().mockResolvedValueOnce(undefined),
@@ -191,36 +168,77 @@ describe('SSE Lambda', () => {
     };
     (LambdaSSETransport as jest.Mock).mockImplementation(() => mockTransport);
 
-    // Mock MCP server
     const mockServer = {
       connect: jest.fn().mockResolvedValueOnce(undefined),
     };
     (McpServer as jest.Mock).mockImplementation(() => mockServer);
 
-    const ssePromise = handleSse(event, mockResponseStream);
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
     const abortSpy = jest.spyOn(AbortController.prototype, 'abort');
-    const onCalls = (mockResponseStream.on as jest.Mock).mock.calls as [string, () => void][];
-    const closeCallback = onCalls.find(([event]) => event === 'close')?.[1];
-    expect(typeof closeCallback).toBe('function');
 
-    const wrappedCloseSpy = jest.fn(closeCallback);
-    mockResponseStream.off('close', closeCallback!);
-    mockResponseStream.on('close', wrappedCloseSpy);
-
+    const ssePromise = handleSse(event, mockResponseStream);
+    await new Promise(resolve => setTimeout(resolve, 1000));
     mockResponseStream.emit('close');
-
     await ssePromise;
 
     expect(abortSpy).toHaveBeenCalled();
-    expect(wrappedCloseSpy).toHaveBeenCalled();
+    expect(dynamoMock.commandCalls(DeleteItemCommand)).toHaveLength(1);
+  });
 
-    // Verify queue deletion
-    expect(sqsMock.commandCalls(DeleteQueueCommand)).toHaveLength(1);
-    expect(sqsMock.commandCalls(DeleteQueueCommand)[0].args[0].input).toEqual({
-      QueueUrl: 'test-queue-url',
-    });
+  it('should process and clear message queue', async () => {
+    const event = createEvent();
+
+    // Mock registrations
+    dynamoMock.on(ScanCommand).resolves({ Items: [] });
+
+    // Mock session creation
+    dynamoMock.on(PutItemCommand).resolves({});
+
+    // Mock message queue with two messages
+    dynamoMock
+      .on(GetItemCommand)
+      .resolvesOnce({
+        Item: {
+          sessionId: { S: 'test-session' },
+          messageQueue: {
+            L: [{ M: { payload: { S: 'message-1' } } }, { M: { payload: { S: 'message-2' } } }],
+          },
+        },
+      })
+      .resolvesOnce({
+        Item: {
+          sessionId: { S: 'test-session' },
+        },
+      })
+      .resolves({
+        Item: undefined,
+      });
+    // Mock clearing queue
+    dynamoMock.on(UpdateItemCommand).resolvesOnce({});
+    dynamoMock.on(DeleteItemCommand).resolvesOnce({});
+
+    const mockTransport = {
+      sessionId: 'test-session',
+      start: jest.fn().mockResolvedValue(undefined),
+      handleMessage: jest.fn(),
+    };
+    (LambdaSSETransport as jest.Mock).mockImplementation(() => mockTransport);
+
+    const mockServer = {
+      connect: jest.fn().mockResolvedValue(undefined),
+    };
+    (McpServer as jest.Mock).mockImplementation(() => mockServer);
+
+    const ssePromise = handleSse(event, mockResponseStream);
+
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    mockResponseStream.emit('close');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await ssePromise;
+
+    expect(mockTransport.handleMessage).toHaveBeenCalledTimes(2);
+    expect(mockTransport.handleMessage).toHaveBeenNthCalledWith(1, 'message-1');
+    expect(mockTransport.handleMessage).toHaveBeenNthCalledWith(2, 'message-2');
+    expect(dynamoMock.commandCalls(UpdateItemCommand)).toHaveLength(1);
+    expect(dynamoMock.commandCalls(DeleteItemCommand)).toHaveLength(1);
   });
 });

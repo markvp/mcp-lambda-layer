@@ -71,7 +71,7 @@ data: ${data}
     await Promise.resolve();
   }
 
-  public handleMessage(message: string): Uint8Array {
+  public handleMessage(message: string): void {
     if (!this.responseStream) {
       throw new Error('Not connected');
     }
@@ -79,8 +79,6 @@ data: ${data}
     try {
       const parsedMessage = JSONRPCMessageSchema.parse(JSON.parse(message));
       this.onmessage?.(parsedMessage);
-
-      return this.buildResponse('message', JSON.stringify(parsedMessage));
     } catch (error) {
       this.onerror?.(error as Error);
       throw error;

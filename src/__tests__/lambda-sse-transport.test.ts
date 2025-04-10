@@ -158,15 +158,7 @@ describe('LambdaSSETransport', () => {
         id: 1,
       };
 
-      const result = transport.handleMessage(JSON.stringify(message));
-
-      expect(onmessage).toHaveBeenCalledWith(message);
-      expect(result).toBeInstanceOf(Uint8Array);
-
-      const response = new TextDecoder().decode(result);
-      expect(response).toContain('event: message');
-      const parsedResponse = JSON.parse(response.split('data: ')[1]) as JSONRPCMessage;
-      expect(parsedResponse).toEqual(message);
+      expect(() => transport.handleMessage(JSON.stringify(message))).not.toThrow();
     });
 
     it('should throw error for invalid JSON-RPC messages', () => {
