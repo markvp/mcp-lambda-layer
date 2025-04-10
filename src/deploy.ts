@@ -52,13 +52,12 @@ export async function deploy(options: DeployOptions = {}): Promise<DeployResult>
     deployArgs.push('--profile', profile);
   }
 
-  // Add VPC configuration if provided
+  // Always pass StackIdentifier, optionally include VPC settings
+  const parameterOverrides = [`StackIdentifier=${stackName}`];
   if (vpcId && subnetIds) {
-    deployArgs.push(
-      '--parameter-overrides',
-      `VpcEnabled=true VpcId=${vpcId} SubnetIds=${subnetIds}`,
-    );
+    parameterOverrides.push(`VpcEnabled=true`, `VpcId=${vpcId}`, `SubnetIds=${subnetIds}`);
   }
+  deployArgs.push('--parameter-overrides', ...parameterOverrides);
 
   // Deploy with SAM
   const deployResult = spawnSync('sam', deployArgs, { stdio: 'inherit' });
