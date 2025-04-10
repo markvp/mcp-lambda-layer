@@ -1,14 +1,26 @@
 {
   "cSpell.words": [
+    "agentic",
+    "awscurl",
     "awslambda",
+    "eventsource",
+    "HMAC",
     "markvp",
     "modelcontextprotocol",
     "streamified",
-    "streamify"
+    "streamify",
+    "unmarshall"
   ],
   "eslint.format.enable": true,
   "eslint.lintTask.enable": true,
   "editor.formatOnSave": true,
   "editor.formatOnPaste": true,
-  "editor.formatOnType": true
+  "editor.formatOnType": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "always"
+  },
+  "eslint.validate": [
+    "javascript",
+    "typescript"
+  ]
 }

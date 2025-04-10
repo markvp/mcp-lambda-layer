@@ -1,0 +1,177 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: MCP Lambda Layer
+
+Parameters:
+  VpcEnabled:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+    Description: Enable VPC support for Lambda functions
+  VpcId:
+    Type: String
+    Description: VPC ID for Lambda functions
+    Default: ""
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: List of subnet IDs for Lambda functions
+    Default: ""
+  StackIdentifier:
+    Type: String
+    Description: Unique identifier for this MCP server instance
+    Default: default
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: mcp-lambda-sam
+    Description: Model Context Protocol implementation using AWS Serverless Application Model (SAM)
+    Author: Mark van Proctor
+    SpdxLicenseId: MIT
+    SemanticVersion: 1.1.0
+    LicenseUrl: LICENSE
+    ReadmeUrl: README.md
+    Labels:
+      - mcp
+      - lambda
+      - serverless
+      - modelcontextprotocol
+      - aws
+      - sam
+      - agenticAI
+      - cursor
+      - claude
+    HomePageUrl: https://github.com/markvp/mcp-lambda-sam
+    SourceCodeUrl: https://github.com/markvp/mcp-lambda-sam
+
+Conditions:
+  UseVpc:
+    Fn::Equals:
+      - !Ref VpcEnabled
+      - "true"
+
+Resources:
+  RegistrationTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: !Sub ${StackIdentifier}-mcp-registrations
+      PrimaryKey:
+        Name: id
+        Type: String
+
+  SessionTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: !Sub ${StackIdentifier}-mcp-sessions
+      PrimaryKey:
+        Name: sessionId
+        Type: String
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseVpc
+    Properties:
+      GroupDescription: Security group for MCP Lambda functions
+      VpcId: !Ref VpcId
+
+  LambdaSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: UseVpc
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  McpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${StackIdentifier}-mcp
+      CodeUri: dist/lambdas/mcp
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 300
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSLambdaVPCAccessExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistrationTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SessionTable
+      Environment:
+        Variables:
+          REGISTRATION_TABLE_NAME: !Ref RegistrationTable
+          SESSION_TABLE_NAME: !Ref SessionTable
+      VpcConfig: !If
+        - UseVpc
+        - SubnetIds: !Ref SubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroup
+        - !Ref AWS::NoValue
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+        InvokeMode: RESPONSE_STREAM
+        Cors:
+          AllowOrigins:
+            - "*"
+          AllowMethods:
+            - GET
+            - POST
+          AllowHeaders:
+            - Content-Type
+
+  RegistrationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${StackIdentifier}-mcp-registration
+      CodeUri: dist/lambdas/registration
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Environment:
+        Variables:
+          REGISTRATION_TABLE_NAME: !Ref RegistrationTable
+          MCP_FUNCTION_NAME: !Ref McpFunction
+      Policies:
+        - VPCAccessPolicy: {}
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RegistrationTable
+        - !Ref McpModifyPermissionsPolicy
+      VpcConfig: !If
+        - UseVpc
+        - SubnetIds: !Ref SubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroup
+        - !Ref AWS::NoValue
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+        Cors:
+          AllowOrigins:
+            - "*"
+          AllowMethods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+          AllowHeaders:
+            - Content-Type
+
+  McpModifyPermissionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${StackIdentifier}-mcp-modify-permissions
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:AddPermission
+              - lambda:RemovePermission
+            Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${McpFunction}
+
+Outputs:
+  McpFunctionUrl:
+    Description: MCP Function URL
+    Value: !GetAtt McpFunctionUrl.FunctionUrl
+  RegistrationFunctionUrl:
+    Description: Registration Function URL
+    Value: !GetAtt RegistrationFunctionUrl.FunctionUrl
