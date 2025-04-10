@@ -1,7 +1,10 @@
 {
   "cSpell.words": [
     "agentic",
+    "awscurl",
     "awslambda",
+    "eventsource",
+    "HMAC",
     "markvp",
     "modelcontextprotocol",
     "streamified",
