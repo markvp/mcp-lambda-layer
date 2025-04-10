@@ -18,18 +18,24 @@ This project provides a serverless implementation of the Model Context Protocol,
 
 ## Architecture
 
+### Mermaid Diagram
+
+You can visualize the system using this Mermaid syntax:
+
+```mermaid
+graph TD
+  Client --> MCP[/"MCP Lambda\n(/sse & /message)"/]
+  MCP -->|read/write| SessionTable[(Session Table)]
+  MCP -->|query| RegistrationTable[(Registration Table)]
+  MCP -->|invoke| RegisteredLambda["Registered Lambda Tool"]
+
+  Admin[Administrator] --> RegistrationLambda[/"Registration Lambda\n(/register)"/]
+  RegistrationLambda -->|write| RegistrationTable
 ```
-┌─────────────┐     ┌─────────────┐     ┌──────────────┐
-│   Client    │────▶│ SSE Lambda  │◀───▶│ Registration │
-└─────────────┘     │(Streaming)  │     │   DynamoDB   │
-      │             └─────────────┘     └──────────────┘
-      │                   ▲
-      │                   │
-      │             ┌─────┴─────┐
-      └────────────▶│  Message  │
-                    │  Lambda   │
-                    └───────────┘
-```
+
+- The **MCP Lambda** reads registrations from the Registration Table on startup and when handling requests.
+- It uses the Session Table to persist session state.
+- It **invokes registered Lambda tools** dynamically using the ARNs stored in the Registration Table. 
 
 ## System Configuration Guide (Administrators)
 
@@ -45,7 +51,41 @@ The command will interactively prompt for administrative configuration:
 - Stack name (for multiple instances)
 - AWS Region
 - VPC configuration (optional)
-- IAM role configuration
+
+### Permissions Overview
+
+To access MCP endpoints, users and clients must have IAM permission to invoke the relevant Function URLs.
+
+- **Administrators**: must be allowed to invoke the `mcp-registration` function URL
+- **Clients**: must be allowed to invoke the `mcp` function URL
+
+You can grant access using either an IAM policy or `aws lambda add-permission` (see below).
+
+### Assigning Permissions via AWS CLI
+
+To grant permission to invoke the **registration function URL**:
+
+```bash
+aws lambda add-permission \
+  --function-name <registration-function-name> \
+  --statement-id allow-registration \
+  --action lambda:InvokeFunctionUrl \
+  --principal "*" \
+  --function-url-auth-type IAM
+```
+
+To grant permission to invoke the **MCP function URL** (SSE and message):
+
+```bash
+aws lambda add-permission \
+  --function-name <mcp-function-name> \
+  --statement-id allow-mcp \
+  --action lambda:InvokeFunctionUrl \
+  --principal "*" \
+  --function-url-auth-type IAM
+```
+
+Replace `<registration-function-name>` and `<mcp-function-name>` with the actual Lambda function names.
 
 ### Registration API
 
@@ -53,7 +93,9 @@ Use these endpoints to manage MCP tools, resources, and prompts:
 
 #### Register a New Tool
 ```bash
-curl -X POST ${REGISTRATION_URL}/register \
+awscurl -X POST ${REGISTRATION_URL}/register \
+  --region ap-southeast-2 \
+  --service lambda \
   -H "Content-Type: application/json" \
   -d '{
     "type": "tool",
@@ -68,17 +110,24 @@ curl -X POST ${REGISTRATION_URL}/register \
 
 #### Update Registration
 ```bash
-curl -X PUT ${REGISTRATION_URL}/register/{id} -d '...'
+awscurl -X PUT ${REGISTRATION_URL}/register/{id} \
+  --region ap-southeast-2 \
+  --service lambda \
+  -d '...'
 ```
 
 #### Delete Registration
 ```bash
-curl -X DELETE ${REGISTRATION_URL}/register/{id}
+awscurl -X DELETE ${REGISTRATION_URL}/register/{id} \
+  --region ap-southeast-2 \
+  --service lambda
 ```
 
 #### List Registrations
 ```bash
-curl ${REGISTRATION_URL}/register
+awscurl ${REGISTRATION_URL}/register \
+  --region ap-southeast-2 \
+  --service lambda
 ```
 
 ### Required IAM Permissions
@@ -87,35 +136,19 @@ curl ${REGISTRATION_URL}/register
 Administrators need these permissions to manage registrations:
 ```json
 {
-    "Version": "2012-10-17",
-    "Statement": [{
-        "Effect": "Allow",
-        "Action": [
-            "lambda:InvokeFunctionUrl",
-            "lambda:AddPermission",
-            "lambda:RemovePermission"
-        ],
-        "Resource": [
-            "arn:aws:lambda:${region}:${account}:function:${stack-id}-mcp-registration"
-        ]
-    }]
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "lambda:InvokeFunctionUrl",
+    "Resource": "arn:aws:lambda:${region}:${account}:function:${stack-id}-mcp-registration",
+    "Condition": {
+      "StringEquals": {
+        "lambda:FunctionUrlAuthType": "AWS_IAM"
+      }
+    }
+  }]
 }
-```
 
-#### For Registered Functions
-Each registered function needs:
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [{
-        "Effect": "Allow",
-        "Action": [
-            "lambda:AddPermission",
-            "lambda:RemovePermission"
-        ],
-        "Resource": "arn:aws:lambda:${region}:${account}:function:${function-name}"
-    }]
-}
 ```
 
 ## System Usage Guide (Clients)
@@ -133,9 +166,13 @@ Clients need these permissions to use the MCP server:
             "Effect": "Allow",
             "Action": "lambda:InvokeFunctionUrl",
             "Resource": [
-                "arn:aws:lambda:${region}:${account}:function:${stack-id}-mcp-sse",
-                "arn:aws:lambda:${region}:${account}:function:${stack-id}-mcp-message"
-            ]
+                "arn:aws:lambda:${region}:${account}:function:${stack-id}-mcp",
+            ],
+            "Condition": {
+                "StringEquals": {
+                    "lambda:FunctionUrlAuthType": "AWS_IAM"
+                }
+            }
         }
     ]
 }
@@ -147,7 +184,7 @@ Clients need these permissions to use the MCP server:
 ```typescript
 const sse = new EventSource(SSE_URL, {
   headers: { 
-    Authorization: 'AWS4-HMAC-SHA256 ...' // AWS IAM signature
+    Authorization: 'AWS4-HMAC-SHA256 ...', // Must be AWS SigV4 signed
   }
 });
 
@@ -156,25 +193,30 @@ sse.onmessage = (event) => {
 };
 ```
 
+### Example cURL for SSE
+
+```bash
+awscurl -X GET "${MCP_URL}/sse" \
+  --region ap-southeast-2 \
+  --service lambda
+```
+
+The first event will include a `sessionId`. Use this when sending messages.
+
 2. **Send Commands**:
-```typescript
-const response = await fetch(MESSAGE_URL, {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Authorization': 'AWS4-HMAC-SHA256 ...' // AWS IAM signature
-  },
-  body: JSON.stringify({
-    sessionId: 'session-123',
-    command: {
-      type: 'tool',
-      name: 'example',
-      parameters: {
-        input: 'test'
-      }
+```bash
+awscurl -X POST "${MCP_URL}/message?sessionId=session-123" \
+  --region ap-southeast-2 \
+  --service lambda \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "example",
+    "params": {
+      "input": "hello"
     }
-  })
-});
+  }'
 ```
 
 ### Error Handling
@@ -245,11 +287,11 @@ The easiest way to deploy the MCP server is through the AWS Serverless Applicati
 Alternatively, you can deploy from the AWS CLI:
 ```bash
 aws serverlessrepo create-cloud-formation-change-set \
-  --application-id arn:aws:serverlessrepo:REGION:ACCOUNT_ID:applications/mcp-lambda-sam \
+  --application-id arn:aws:serverlessrepo:ap-southeast-2:522814717816:applications/mcp-lambda-sam \
   --stack-name your-stack-name \
-  --parameter-overrides '[{"name":"StackIdentifier","value":"default"}]'
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides '[{"name":"StackIdentifier","value":"your-stack-id"}]'
 ```
-Replace `REGION` and `ACCOUNT_ID` with the appropriate values for your deployment.
   
 ### 2. Using npx (CLI)
 
@@ -261,31 +303,13 @@ The command will interactively prompt for administrative configuration:
 - Stack name (for multiple instances)
 - AWS Region
 - VPC configuration (optional)
-- IAM role configuration
 
-### 3. Local Development and Deployment
+### 3. Programmatic Usage with Install
+Install the package:
 
 ```bash
-# Install dependencies
-npm install
-
-# Deploy (after installing)
-npm run deploy
-
-# Or deploy directly with npx
-npx @markvp/mcp-lambda-sam deploy
-
-# Run tests
-npm test
-
-# Build
-npm run build
-
-# Lint
-npm run lint
+npm install @markvp/mcp-lambda-sam
 ```
-
-### 4. Programmatic Usage After Install
 
 After installing the package, you can use it programmatically:
 ```javascript
@@ -295,17 +319,25 @@ import { deploy } from '@markvp/mcp-lambda-sam';
 deploy();
 ```
 
-## Development
+### 4. Local Development and Deployment
+Install the package:
 
+```bash
+npm install @markvp/mcp-lambda-sam
+```
+
+After making development changes, you can deploy it manually:
+```bash
+npm run deploy
+```
+
+## Development
 ```bash
 # Install dependencies
 npm install
 
-# Deploy (after installing)
-npm run deploy
-
-# Or deploy directly with npx
-npx @markvp/mcp-lambda-sam deploy
+# Lint
+npm run lint
 
 # Run tests
 npm test
@@ -313,8 +345,8 @@ npm test
 # Build
 npm run build
 
-# Lint
-npm run lint
+# Deploy
+npm run deploy
 ```
 
 ### Publishing to SAR

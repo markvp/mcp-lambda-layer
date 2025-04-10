@@ -55,7 +55,7 @@ export function getSseHandler() {
     const messageEndpoint = '/message';
     const server = new McpServer({
       name: 'MCP Lambda Server',
-      version: '1.0.7',
+      version: '1.1.0',
     });
 
     const { Items = [] } = await dynamodbClient.send(

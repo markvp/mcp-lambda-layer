@@ -1,6 +1,6 @@
 {
   "name": "@markvp/mcp-lambda-sam",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "AWS Lambda for Model Context Protocol (MCP) Server",
   "bin": {
     "mcp-lambda-sam": "bin/mcp-lambda-sam.js"
@@ -28,7 +28,7 @@
     "build": "npm run clean && npm run build:lambdas && npm run build:deploy && npm run build:bin",
     "prepublishOnly": "npm run build",
     "deploy": "npm run build && node ./bin/mcp-lambda-sam.js deploy",
-    "package:sar": "sam package --template-file template.yaml --output-template-file packaged.yaml",
+    "package:sar": "sam package --resolve-s3 --template-file template.yaml --output-template-file packaged.yaml",
     "publish:sar": "sam publish --template packaged.yaml",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
