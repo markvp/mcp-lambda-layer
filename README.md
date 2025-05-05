@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/markvp-mcp-lambda-sam-badge.png)](https://mseep.ai/app/markvp-mcp-lambda-sam)
+
 # MCP Lambda SAM
 
 Model Context Protocol (MCP) implementation using AWS Lambda and SAM.
